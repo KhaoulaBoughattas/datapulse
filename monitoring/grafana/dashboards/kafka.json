@@ -1,0 +1,15 @@
+{
+  "title": "DataPulse — Kafka",
+  "uid": "datapulse-kafka",
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "refresh": "15s",
+  "panels": [
+    {"type": "timeseries", "title": "Messages In / sec, by topic", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+     "targets": [{"expr": "sum(rate(kafka_topic_partition_current_offset[1m])) by (topic)", "legendFormat": "{{topic}}"}]},
+    {"type": "timeseries", "title": "Consumer Group Lag", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+     "targets": [{"expr": "sum(kafka_consumergroup_lag) by (consumergroup, topic)", "legendFormat": "{{consumergroup}} / {{topic}}"}]},
+    {"type": "stat", "title": "Partitions per Topic", "gridPos": {"h": 6, "w": 24, "x": 0, "y": 8},
+     "targets": [{"expr": "count(kafka_topic_partitions) by (topic)", "legendFormat": "{{topic}}"}]}
+  ]
+}

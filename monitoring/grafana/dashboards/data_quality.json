@@ -1,0 +1,14 @@
+{
+  "title": "DataPulse — Data Quality",
+  "uid": "datapulse-data-quality",
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "refresh": "1m",
+  "panels": [
+    {"type": "gauge", "title": "Latest Quality Score, by check", "gridPos": {"h": 10, "w": 24, "x": 0, "y": 0},
+     "targets": [{"expr": "data_quality_score", "legendFormat": "{{check_name}}"}],
+     "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100}}},
+    {"type": "timeseries", "title": "Quality Score Trend", "gridPos": {"h": 8, "w": 24, "x": 0, "y": 10},
+     "targets": [{"expr": "data_quality_score", "legendFormat": "{{check_name}}"}]}
+  ]
+}

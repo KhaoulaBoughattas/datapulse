@@ -1,0 +1,15 @@
+{
+  "title": "DataPulse — Spark Streaming",
+  "uid": "datapulse-spark-streaming",
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "refresh": "15s",
+  "panels": [
+    {"type": "timeseries", "title": "Batch Processing Time (ms)", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+     "targets": [{"expr": "spark_streaming_lastCompletedBatch_processingDelay", "legendFormat": "processing delay"}]},
+    {"type": "timeseries", "title": "Input Rate (records/sec)", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+     "targets": [{"expr": "spark_streaming_lastCompletedBatch_inputRecords", "legendFormat": "records/batch"}]},
+    {"type": "timeseries", "title": "Executor JVM Heap Used", "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8},
+     "targets": [{"expr": "jvm_heap_used_bytes", "legendFormat": "{{instance}}"}]}
+  ]
+}
