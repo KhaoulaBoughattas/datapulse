@@ -1,0 +1,19 @@
+services:
+  adminer:
+    image: adminer:4.8.1-standalone
+    container_name: datapulse-adminer
+    restart: unless-stopped
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    ports:
+      - "${ADMINER_PORT:-8082}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - datapulse-net
+
+networks:
+  datapulse-net:
+    external: true
+    name: datapulse-net

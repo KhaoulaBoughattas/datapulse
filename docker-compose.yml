@@ -1,0 +1,475 @@
+name: datapulse
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: datapulse-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-datapulse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_locally}
+      POSTGRES_DB: ${POSTGRES_DB:-datapulse}
+    ports:
+    - ${POSTGRES_PORT:-5432}:5432
+    volumes:
+    - postgres-data:/var/lib/postgresql/data
+    - ./infrastructure/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -U ${POSTGRES_USER:-datapulse} -d ${POSTGRES_DB:-datapulse}
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+    - datapulse-net
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: datapulse-backend
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-datapulse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_locally}
+      POSTGRES_DB: ${POSTGRES_DB:-datapulse}
+      JWT_SECRET: ${JWT_SECRET:-change_me_to_a_long_random_string}
+      JWT_ALGORITHM: HS256
+      JWT_EXPIRE_MINUTES: 60
+      API_ENV: local
+    ports:
+    - 8000:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8000/health')
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+    - datapulse-net
+    volumes:
+    - ./lineage:/app/lineage
+  minio:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    container_name: datapulse-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minioadmin}
+    command: server /data --console-address ":9001"
+    ports:
+    - 9000:9000
+    - 9001:9001
+    volumes:
+    - minio-data:/data
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:9000/minio/health/live
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+    - datapulse-net
+  minio-init:
+    image: minio/mc:RELEASE.2024-10-08T09-37-26Z
+    container_name: datapulse-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: '/bin/sh -c " mc alias set local http://minio:9000 ${S3_ACCESS_KEY:-minioadmin} ${S3_SECRET_KEY:-minioadmin} && mc mb --ignore-existing local/${S3_BUCKET:-datapulse} && echo ''Bucket ready.'' "
+
+      '
+    networks:
+    - datapulse-net
+  airflow-postgres:
+    image: postgres:16-alpine
+    container_name: datapulse-airflow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+    - airflow-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -U airflow -d airflow
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+    - datapulse-net
+  airflow-init:
+    build:
+      context: ./airflow
+      dockerfile: Dockerfile
+    container_name: datapulse-airflow-init
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+    environment: &id001
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:-}
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth
+      DATAPULSE_API_BASE_URL: http://backend:8000
+      DATAPULSE_DAG_TENANT_SLUG: acme
+      DATAPULSE_DAG_SERVICE_EMAIL: owner@acme.io
+      DATAPULSE_DAG_SERVICE_PASSWORD: supersecret123
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-datapulse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_locally}
+      POSTGRES_SOURCE_DB: datapulse_source
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+      S3_BUCKET: ${S3_BUCKET:-datapulse}
+    volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/plugins:/opt/airflow/plugins
+    - airflow-logs:/opt/airflow/logs
+    - ./ingestion:/opt/airflow/ingestion
+    entrypoint: /bin/bash
+    command:
+    - -c
+    - airflow db migrate && airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@datapulse.local || true
+    networks:
+    - datapulse-net
+  airflow-webserver:
+    build:
+      context: ./airflow
+      dockerfile: Dockerfile
+    container_name: datapulse-airflow-webserver
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    environment: *id001
+    volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/plugins:/opt/airflow/plugins
+    - airflow-logs:/opt/airflow/logs
+    - ./ingestion:/opt/airflow/ingestion
+    ports:
+    - 8080:8080
+    command: webserver
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:8080/health
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+    - datapulse-net
+  airflow-scheduler:
+    build:
+      context: ./airflow
+      dockerfile: Dockerfile
+    container_name: datapulse-airflow-scheduler
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    environment: *id001
+    volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/plugins:/opt/airflow/plugins
+    - airflow-logs:/opt/airflow/logs
+    - ./ingestion:/opt/airflow/ingestion
+    command: scheduler
+    networks:
+    - datapulse-net
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: datapulse-kafka
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      CLUSTER_ID: datapulse-kraft-cluster-01
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
+    ports:
+    - 9094:9094
+    volumes:
+    - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    networks:
+    - datapulse-net
+  kafka-init:
+    image: apache/kafka:3.8.0
+    container_name: datapulse-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: '/bin/sh -c " /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic user-events --partitions 6 --replication-factor 1 --config retention.ms=604800000 && /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic order-events --partitions 3 --replication-factor 1 --config retention.ms=604800000 && /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic payment-events --partitions 3 --replication-factor 1 --config retention.ms=604800000 && /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list "
+
+      '
+    networks:
+    - datapulse-net
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    container_name: datapulse-kafka-ui
+    restart: unless-stopped
+    environment:
+      KAFKA_CLUSTERS_0_NAME: datapulse
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    ports:
+    - 8081:8080
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+    - datapulse-net
+  spark:
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    container_name: datapulse-spark
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-datapulse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_locally}
+      POSTGRES_SOURCE_DB: datapulse_source
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+      S3_BUCKET: ${S3_BUCKET:-datapulse}
+      DATAPULSE_API_BASE_URL: http://backend:8000
+      MARQUEZ_URL: http://marquez:5000
+      OPENLINEAGE_NAMESPACE: datapulse
+    volumes:
+    - ./spark/jobs:/opt/app/jobs
+    - ./spark/tests:/opt/app/tests
+    - ./ingestion:/opt/app/ingestion
+    - ./lineage:/opt/app/lineage
+    ports:
+    - 4040:4040
+    networks:
+    - datapulse-net
+    profiles:
+    - batch
+  spark-streaming:
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    container_name: datapulse-spark-streaming
+    restart: unless-stopped
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+      S3_BUCKET: ${S3_BUCKET:-datapulse}
+      STREAMING_CHECKPOINT_DIR: /opt/app/checkpoints
+    volumes:
+    - ./spark/jobs:/opt/app/jobs
+    - ./spark/tests:/opt/app/tests
+    - streaming-checkpoints:/opt/app/checkpoints
+    - ./ingestion:/opt/app/ingestion
+    - ./lineage:/opt/app/lineage
+    ports:
+    - 4041:4040
+    depends_on:
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    command:
+    - python
+    - -m
+    - jobs.streaming.main
+    networks:
+    - datapulse-net
+    profiles:
+    - streaming
+  streaming-producer:
+    build:
+      context: ./streaming
+      dockerfile: Dockerfile
+    container_name: datapulse-streaming-producer
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-datapulse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_locally}
+      POSTGRES_SOURCE_DB: datapulse_source
+    volumes:
+    - ./streaming:/opt/app
+    networks:
+    - datapulse-net
+    profiles:
+    - streaming
+  marquez-db:
+    image: postgres:16-alpine
+    container_name: datapulse-marquez-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: marquez
+      POSTGRES_PASSWORD: marquez
+      POSTGRES_DB: marquez
+    volumes:
+    - marquez-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -U marquez -d marquez
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+    - datapulse-net
+  marquez:
+    image: marquezproject/marquez:0.50.0
+    container_name: datapulse-marquez
+    restart: unless-stopped
+    command:
+    - --config
+    - /marquez.yml
+    volumes:
+    - ./infrastructure/marquez/marquez.yml:/marquez.yml:ro
+    ports:
+    - 5000:5000
+    depends_on:
+      marquez-db:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - --spider
+      - -q
+      - http://localhost:5000/api/v1/namespaces
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+    - datapulse-net
+  marquez-web:
+    image: marquezproject/marquez-web:0.50.0
+    container_name: datapulse-marquez-web
+    restart: unless-stopped
+    environment:
+      MARQUEZ_HOST: marquez
+      MARQUEZ_PORT: 5000
+    ports:
+    - 3002:3000
+    depends_on:
+      marquez:
+        condition: service_healthy
+    networks:
+    - datapulse-net
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.7.0
+    container_name: datapulse-kafka-exporter
+    restart: unless-stopped
+    command:
+    - --kafka.server=kafka:9092
+    ports:
+    - 9308:9308
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+    - datapulse-net
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: datapulse-prometheus
+    restart: unless-stopped
+    volumes:
+    - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    - prometheus-data:/prometheus
+    ports:
+    - 9090:9090
+    networks:
+    - datapulse-net
+  grafana:
+    image: grafana/grafana:11.2.2
+    container_name: datapulse-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+    volumes:
+    - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    - grafana-data:/var/lib/grafana
+    ports:
+    - 3001:3000
+    depends_on:
+    - prometheus
+    networks:
+    - datapulse-net
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    container_name: datapulse-frontend
+    restart: unless-stopped
+    ports:
+    - 3000:3000
+    depends_on:
+    - backend
+    networks:
+    - datapulse-net
+networks:
+  datapulse-net:
+    name: datapulse-net
+    driver: bridge
+volumes:
+  postgres-data:
+    name: datapulse-postgres-data
+  minio-data:
+    name: datapulse-minio-data
+  airflow-postgres-data:
+    name: datapulse-airflow-postgres-data
+  airflow-logs:
+    name: datapulse-airflow-logs
+  kafka-data:
+    name: datapulse-kafka-data
+  streaming-checkpoints:
+    name: datapulse-streaming-checkpoints
+  marquez-db-data:
+    name: datapulse-marquez-db-data
+  prometheus-data:
+    name: datapulse-prometheus-data
+  grafana-data:
+    name: datapulse-grafana-data
