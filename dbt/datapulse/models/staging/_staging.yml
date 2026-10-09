@@ -1,0 +1,94 @@
+version: 2
+
+sources:
+  - name: raw
+    description: "RAW layer landed by warehouse/cli.py"
+    schema: raw
+    tables:
+      - name: customers
+      - name: products
+      - name: orders
+      - name: order_items
+      - name: payments
+      - name: subscriptions
+      - name: events
+
+models:
+  - name: stg_customers
+    columns:
+      - name: customer_id
+        tests: [not_null, unique]
+      - name: tenant_id
+        tests: [not_null]
+      - name: email
+        tests: [not_null]
+
+  - name: stg_products
+    columns:
+      - name: product_id
+        tests: [not_null, unique]
+
+  - name: stg_orders
+    columns:
+      - name: order_id
+        tests: [not_null, unique]
+      - name: customer_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_customers')
+              field: customer_id
+      - name: status
+        tests:
+          - accepted_values:
+              values: ['completed', 'pending', 'cancelled', 'refunded']
+
+  - name: stg_order_items
+    columns:
+      - name: order_item_id
+        tests: [not_null, unique]
+      - name: order_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_orders')
+              field: order_id
+      - name: product_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_products')
+              field: product_id
+
+  - name: stg_payments
+    columns:
+      - name: payment_id
+        tests: [not_null, unique]
+      - name: order_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_orders')
+              field: order_id
+      - name: status
+        tests:
+          - accepted_values:
+              values: ['success', 'pending', 'failed', 'refunded']
+
+  - name: stg_subscriptions
+    columns:
+      - name: subscription_id
+        tests: [not_null, unique]
+      - name: plan
+        tests:
+          - accepted_values:
+              values: ['basic', 'pro', 'enterprise']
+
+  - name: stg_events
+    columns:
+      - name: event_id
+        tests: [not_null, unique]
+      - name: event_type
+        tests:
+          - accepted_values:
+              values: ['product_view', 'add_to_cart', 'checkout', 'purchase', 'login', 'subscription_created', 'subscription_cancelled']

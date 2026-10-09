@@ -1,0 +1,23 @@
+# Copy to ~/.dbt/profiles.yml and fill in real values via .env
+datapulse:
+  target: local
+  outputs:
+    local:
+      type: postgres
+      host: "{{ env_var('POSTGRES_HOST') }}"
+      port: "{{ env_var('POSTGRES_PORT') | as_number }}"
+      user: "{{ env_var('POSTGRES_USER') }}"
+      password: "{{ env_var('POSTGRES_PASSWORD') }}"
+      dbname: "{{ env_var('POSTGRES_WAREHOUSE_DB', 'datapulse_warehouse') }}"
+      schema: staging
+      threads: 4
+    snowflake:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE', 'DATAPULSE_TRANSFORMER') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_TRANSFORM_WAREHOUSE', 'DATAPULSE_TRANSFORM_WH') }}"
+      database: "{{ env_var('SNOWFLAKE_STAGING_DATABASE', 'DATAPULSE_STAGING') }}"
+      schema: staging
+      threads: 4
